@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ecommerce-middleware
+  namespace: ecommerce
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ecommerce-middleware
+  template:
+    metadata:
+      labels:
+        app: ecommerce-middleware
+    spec:
+      containers:
+        - name: middleware
+          image: 119994750175.dkr.ecr.us-east-1.amazonaws.com/middleware:latest
+          ports:
+            - containerPort: 5000
+          env:
+            - name: DB_HOST
+              value: ecommerce-db
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: db-secret
+                  key: POSTGRES_DB
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: db-secret
+                  key: POSTGRES_USER
+            - name: DB_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: db-secret
+                  key: POSTGRES_PASSWORD
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 15
+            periodSeconds: 20
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ecommerce-middleware
+  namespace: ecommerce
+spec:
+  selector:
+    app: ecommerce-middleware
+  ports:
+    - port: 5000
+      targetPort: 5000

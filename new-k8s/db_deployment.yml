@@ -1,0 +1,49 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ecommerce-db
+  namespace: ecommerce
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ecommerce-db
+  template:
+    metadata:
+      labels:
+        app: ecommerce-db
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:15
+          ports:
+            - containerPort: 5432
+          envFrom:
+            - secretRef:
+                name: db-secret
+          volumeMounts:
+            - name: db-data
+              mountPath: /var/lib/postgresql/data
+            - name: db-init
+              mountPath: /docker-entrypoint-initdb.d   # ✅ Mount schema.sql here
+      volumes:
+        - name: db-data
+          emptyDir: {}
+        - name: db-init
+          configMap:
+            name: db-schema
+
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: ecommerce-db
+  namespace: ecommerce
+spec:
+  selector:
+    app: ecommerce-db
+  ports:
+    - port: 5432
+      targetPort: 5432

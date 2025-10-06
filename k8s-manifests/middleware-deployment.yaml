@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: middleware
+  namespace: my-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: middleware
+  template:
+    metadata:
+      labels:
+        app: middleware
+    spec:
+      containers:
+        - name: middleware
+          image: registry.gitlab.com/<your-username>/<project>/middleware:latest
+          ports:
+            - containerPort: 5000
+          env:
+            - name: DB_HOST
+              value: "db-service"
+            - name: DB_USER
+              value: "admin"
+            - name: DB_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: db-secret
+                  key: password
+            - name: DB_NAME
+              value: "ordersdb"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: middleware-service
+  namespace: my-app
+spec:
+  type: ClusterIP
+  selector:
+    app: middleware
+  ports:
+    - port: 5000
+      targetPort: 5000

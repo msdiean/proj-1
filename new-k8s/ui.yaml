@@ -1,0 +1,59 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ecommerce-ui
+  namespace: ecommerce
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ecommerce-ui
+  template:
+    metadata:
+      labels:
+        app: ecommerce-ui
+    spec:
+      containers:
+        - name: ui
+          image: 119994750175.dkr.ecr.us-east-1.amazonaws.com/ui:latest
+          ports:
+            - containerPort: 80
+          env:
+            - name: MIDDLEWARE_URL
+              value: >
+                http://ecommerce-middleware.ecommerce.svc.cluster.local:5000
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          volumeMounts:
+            - name: logs
+              mountPath: /var/log
+      volumes:
+        - name: logs
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ecommerce-ui
+  namespace: ecommerce
+  # annotations:
+    # service.beta.kubernetes.io/aws-load-balancer-type: >
+      # nlb
+spec:
+  type: LoadBalancer
+  selector:
+    app: ecommerce-ui
+  ports:
+    - port: 80
+      targetPort: 80
