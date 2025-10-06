@@ -1,0 +1,41 @@
+version: "3.9"
+
+services:
+  db:
+      image: postgres:15
+      container_name: myapp-db
+      environment:
+        POSTGRES_USER: admin
+        POSTGRES_PASSWORD: admin123
+        POSTGRES_DB: ordersdb
+      ports:
+        - "5432:5432"
+      volumes:
+        - db_data:/var/lib/postgresql/data
+        - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
+
+  middleware:
+    build: ./middleware
+    container_name: myapp-middleware
+    environment:
+      DB_HOST: db
+      DB_USER: admin
+      DB_PASS: admin123
+      DB_NAME: ordersdb
+    depends_on:
+      - db
+    ports:
+      - "5000:5000"
+
+  ui:
+    build: ./ui
+    container_name: myapp-ui
+    environment:
+      MIDDLEWARE_URL: http://middleware:5000
+    depends_on:
+      - middleware
+    ports:
+      - "8080:80"
+
+volumes:
+  db_data:

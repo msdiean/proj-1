@@ -1,0 +1,176 @@
+# =========================================================
+# GitLab CI/CD Pipeline for Ecommerce Project
+# Stages: validation → build → approval → deploy → test → notify
+# =========================================================
+
+stages:
+  - validation
+  - build
+  - deploy
+  - test
+  - notify
+
+# -------------------------
+# Global variables (change in GitLab CI/CD Settings → Variables)
+# -------------------------
+variables:
+  KUBE_NAMESPACE: "ecommerce"
+  AWS_DEFAULT_REGION: "us-east-1"
+  ECR_REGISTRY: "119994750175.dkr.ecr.us-east-1.amazonaws.com"
+  MIDDLEWARE_REPO: "middleware"
+  UI_REPO: "ui"
+
+  # Email notification vars
+  SES_REGION: "ap-south-1"
+  SES_FROM: "dharini.r@getskilldeo.xyz"
+  SES_TO: "vignesh@neshinc.com"
+
+# -------------------------
+# Stage 1: Validation
+# -------------------------
+.validation:
+  stage: validation
+  tags: [vignesh]
+  # sudo apt-get update && sudo apt-get install -y dos2unix
+  # sudo apt-get install -y yamllint
+  # sudo apt-get install -y yamllint
+
+  script:
+    - echo "🔍 Running YAML and Python lint checks..."
+    - find new-k8s/ -type f -name "*.yml" -o -name "*.yaml" | xargs dos2unix
+    - yamllint new-k8s/
+    - flake8 middleware/
+
+# -------------------------
+# Stage 2: Build Docker Images
+# -------------------------
+middleware_build:
+  stage: build
+  tags: [vignesh]
+  script:
+    - echo "🐳 Building middleware Docker image..."
+    - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY
+    - docker build -t $ECR_REGISTRY/$MIDDLEWARE_REPO:$CI_COMMIT_SHORT_SHA -f ./middleware/Dockerfile ./middleware
+    - docker push $ECR_REGISTRY/$MIDDLEWARE_REPO:$CI_COMMIT_SHORT_SHA
+    - docker tag $ECR_REGISTRY/$MIDDLEWARE_REPO:$CI_COMMIT_SHORT_SHA $ECR_REGISTRY/$MIDDLEWARE_REPO:latest
+    - docker push $ECR_REGISTRY/$MIDDLEWARE_REPO:latest
+
+ui_build:
+  stage: build
+  tags: [vignesh]
+  script:
+    - echo "🐳 Building UI Docker image..."
+    - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY
+    - docker build -t $ECR_REGISTRY/$UI_REPO:$CI_COMMIT_SHORT_SHA -f ./ui/Dockerfile ./ui
+    - docker push $ECR_REGISTRY/$UI_REPO:$CI_COMMIT_SHORT_SHA
+    - docker tag $ECR_REGISTRY/$UI_REPO:$CI_COMMIT_SHORT_SHA $ECR_REGISTRY/$UI_REPO:latest
+    - docker push $ECR_REGISTRY/$UI_REPO:latest
+
+test:
+  stage: test
+  tags: [vignesh]
+  script:
+    - aws ecr describe-image-scan-findings --repository-name $MIDDLEWARE_REPO --image-id imageTag=latest > middleware.json
+    #- jq -r 'to_entries|map("\(.key)=\"\(.value|tostring)\"")|.[]' middleware.json > middleware
+    - aws s3 cp middleware.json  s3://my-s3-bucket-july/App/Middleware/
+    #- aws s3 cp middleware  s3://ecr-image-scanning/App/Middleware/
+    - export VULNERABILITIES=$(jq -r '.imageScanFindings.findingSeverityCounts' middleware.json)
+    - echo $VULNERABILITIES
+    - export HIGH_THRESHOLD=2
+    - export MEDIUM_THRESHOLD=5
+    - export HIGH_VULNERABILITIES=$(echo "$VULNERABILITIES" | jq -r '.HIGH')
+    - export MEDIUM_VULNERABILITIES=$(echo "$VULNERABILITIES" | jq -r '.MEDIUM')
+    - echo "Please find the scan results attached." | mail -s "Scan Results" -A middleware.json vignesh.raveendran@neshinc.com
+    - >
+      if [[ $HIGH_VULNERABILITIES -gt $HIGH_THRESHOLD || $MEDIUM_VULNERABILITIES -gt $MEDIUM_THRESHOLD ]]; then
+        echo "Too many high or medium vulnerabilities. Failing pipeline."
+        exit 1
+      else
+        echo "Vulnerability levels within acceptable thresholds. Proceeding with deployment."
+      fi
+    #- echo "Please find the scan results attached." | mail -s "Scan Results" -A scan_results.json vignesh.raveendran@neshinc.com
+  artifacts:
+    paths:
+      - report.txt
+  allow_failure: true # Optional, set to true if you want to proceed even if the job fails
+
+
+# -------------------------
+# Stage 3: Manual Approval
+# -------------------------
+approve_deploy:
+  stage: deploy
+  tags: [vignesh]
+  script:
+    - echo "⏳ Waiting for manual approval before deploying..."
+  when: manual
+  allow_failure: false
+
+# -------------------------
+# Stage 4: Deployment
+# -------------------------
+deploy:
+  stage: deploy
+  tags: [vignesh]
+  needs: [middleware_build, ui_build, approve_deploy]
+  script:
+    - echo "🚀 Deploying commit $CI_COMMIT_SHORT_SHA to $KUBE_NAMESPACE"
+    - kubectl get ns
+
+    # Replace placeholders with correct image tags
+    - sed -i "s|MIDDLEWARE_IMAGE|$ECR_REGISTRY/$MIDDLEWARE_REPO:$CI_COMMIT_SHORT_SHA|g" ./new-k8s/middleware.yml
+    - sed -i "s|UI_IMAGE|$ECR_REGISTRY/$UI_REPO:$CI_COMMIT_SHORT_SHA|g" ./new-k8s/ui.yaml
+
+    # Apply manifests
+    - kubectl apply -f ./new-k8s/lb.yml
+    - kubectl apply -f ./new-k8s/
+
+    # Rollout checks
+    - kubectl rollout status deploy/ecommerce-middleware -n $KUBE_NAMESPACE --timeout=180s
+    - kubectl rollout status deploy/ecommerce-ui -n $KUBE_NAMESPACE --timeout=180s
+    - echo "✅ Deployment successful in $KUBE_NAMESPACE namespace"
+
+# -------------------------
+# Stage 5: Smoke Tests
+# -------------------------
+smoke_test:
+  stage: test
+  tags: [vignesh]
+  script:
+    - echo "🧪 Running smoke tests..."
+    - kubectl rollout status deployment/ecommerce-middleware -n $KUBE_NAMESPACE
+    - kubectl rollout status deployment/ecommerce-ui -n $KUBE_NAMESPACE
+
+# -------------------------
+# Stage 6: Monitoring
+# -------------------------
+monitor:
+  stage: test
+  tags: [vignesh]
+  needs: [smoke_test]
+  script:
+    - echo "📊 Monitoring application health..."
+    - kubectl get pods -n $KUBE_NAMESPACE -o wide
+    - kubectl top pods -n $KUBE_NAMESPACE || echo "⚠️ Metrics server not installed"
+    - kubectl logs -l app=ecommerce-middleware -n $KUBE_NAMESPACE --tail=20
+    - kubectl logs -l app=ecommerce-ui -n $KUBE_NAMESPACE --tail=20
+
+# -------------------------
+# Stage 7: Email Notification via AWS SES
+# -------------------------
+notify_email:
+  stage: notify
+  tags: [vignesh]
+  script:
+    - |
+      SUBJECT="📢 Pipeline Completed: $CI_PROJECT_NAME"
+      BODY="Pipeline completed for commit $CI_COMMIT_SHORT_SHA on branch $CI_COMMIT_REF_NAME\n\nProject: $CI_PROJECT_NAME\nBranch: $CI_COMMIT_REF_NAME\nCommit: $CI_COMMIT_SHORT_SHA\n\n🔗 View Pipeline: $CI_PROJECT_URL/-/pipelines/$CI_PIPELINE_ID\n🔗 View Job: $CI_JOB_URL"
+
+      echo "📧 Sending email via AWS SES..."
+      aws ses send-email \
+        --from "$SES_FROM" \
+        --region "$SES_REGION" \
+        --destination "ToAddresses=[\"$SES_TO\"]" \
+        --message "{\"Subject\":{\"Data\":\"$SUBJECT\",\"Charset\":\"UTF-8\"},\"Body\":{\"Text\":{\"Data\":\"$BODY\",\"Charset\":\"UTF-8\"}}}"
+  when: always
+  needs: [monitor]
